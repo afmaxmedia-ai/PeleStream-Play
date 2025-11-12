@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>PeleStream: Complete Platform</title><!-- Load Tailwind CSS --><script src="https://cdn.tailwindcss.com"></script><!-- Load Lucide Icons --><script src="https://unpkg.com/lucide@latest"></script><style>/* Custom colors based on the Proud, Romantic, Legacy tone */:root {--color-primary: #8b0000; /* Deep Red/Maroon */--color-secondary: #FFD700; /* Gold */--color-accent: #000080; /* Electric Blue/Navy */}.bg-primary { background-color: var(--color-primary); }.text-primary { color: var(--color-primary); }.bg-secondary { background-color: var(--color-secondary); }.text-secondary { color: var(--color-secondary); }.bg-accent { background-color: var(--color-accent); }.text-accent { color: var(--color-accent); }
+    /* Inter Font and Dark Background (Optimized for Mobile) */
+    body { font-family: 'Inter', sans-serif; background-color: #0d0d0d; color: #fff; }
+
+    /* No scrollbar for clean mobile UX */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    /* Custom scrollbar for genres */
+    .genre-scroll {
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+
+    /* Content section visibility control */
+    .content-section { display: none; }
+    .content-section.active { display: block; }
+
+    /* Style for the Offline Toggle switch */
+    .toggle-switch {
+        @apply relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in;
+    }
+    .toggle-switch input:checked + .slider {
+        @apply bg-primary;
+    }
+    .toggle-switch input:checked + .slider:before {
+        transform: translateX(20px);
+    }
+    .slider {
+        @apply block overflow-hidden cursor-pointer rounded-full h-6 bg-gray-600;
+    }
+    .slider:before {
+        @apply absolute w-5 h-5 bg-white rounded-full transition duration-200 ease-in-out;
+        content: "";
+        top: 2px;
+        left: 2px;
+    }
+</style>
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, collection, query, addDoc, onSnapshot, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // --- GLOBAL & CONSTANTS ---
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+    const QUEEN_AWA_ID = 'QueenAwa_ID_8D7392'; // Mock ID for tipping recipient
+
+    let app, db, auth, userId = 'loading...';
+    let isAuthReady = false;
+    let activeTab = 'home-content';
+
+    // --- FIREBASE SETUP ---
+    async function setupFirebase() {
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            setLogLevel('Debug');
+
+            await new Promise(resolve => {
+                const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                if (token) {
+                    signInWithCustomToken(auth, token).catch(e => {
+                        console.error("Custom token failed, falling back to anonymous:", e);
+                        signInAnonymously(auth);
+                    }).finally(resolve);
+                } else {
+                    signInAnonymously(auth).finally(resolve);
+                }
+            });
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                } else {
+                    userId = crypto.randomUUID();
+                }
+                isAuthReady = true;
+                document.getElementById('current-user-id').textContent = userId;
+                console.log(`Firebase Initialized. User ID: ${userId}`);
+                initPlaylistListener(); // Start listening once authenticated
+            });
+
+        } catch (error) {
+            console.error("PeleStream: Fatal Firebase setup failure.", error);
+        }
+    }
+
+    // --- FIRESTORE DATA FUNCTIONS ---
+
+    // Private Collection Path for Playlists
+    function getPlaylistCollectionRef() {
+        if (!isAuthReady || !userId || !db) return null;
+        return collection(db, `artifacts/${appId}/users/${userId}/playlists`);
+    }
+
+    // Public Collection Path for Tipping
+    function getTipCollectionRef() {
+        if (!isAuthReady || !db) return null;
+        // Public path for analytics visibility on PeleCreator dashboard
+        return collection(db, `artifacts/${appId}/public/data/tips`);
+    }
+
+    // Real-time listener for Playlists
+    function initPlaylistListener() {
+        const playlistRef = getPlaylistCollectionRef();
+        if (!playlistRef) return;
+
+        onSnapshot(query(playlistRef), (snapshot) => {
+            const playlists = [];
+            snapshot.forEach((doc) => {
+                playlists.push({ id: doc.id, ...doc.data() });
+            });
+            renderPlaylists(playlists);
+        }, (error) => {
+            console.error("Error listening to playlists:", error);
+        });
+    }
+
+    // Create New Playlist
+    async function createNewPlaylist() {
+        const playlistNameInput = document.getElementById('newPlaylistName');
+        const name = playlistNameInput.value.trim();
+
+        if (!name) { document.getElementById('playlist-message').textContent = "Name cannot be empty."; return; }
+
+        const playlistRef = getPlaylistCollectionRef();
+        if (!playlistRef) { document.getElementById('playlist-message').textContent = "DB not ready."; return; }
+
+        try {
+            await addDoc(playlistRef, {
+                name: name,
+                createdAt: Date.now(),
+                trackIds: [],
+                ownerId: userId,
+            });
+            document.getElementById('playlist-message').textContent = `Collection "${name}" created!`;
+            playlistNameInput.value = '';
+            setTimeout(closeCreationModal, 2000);
+        } catch (e) {
+            console.error("Error adding document: ", e);
+            document.getElementById('playlist-message').textContent = "Error saving playlist.";
+        }
+    }
+
+    // Record a Tip (MANDATORY feature integration)
+    async function recordTip(amount) {
+        if (!isAuthReady || !db) { return false; }
+        const tipRef = getTipCollectionRef();
+
+        try {
+            await addDoc(tipRef, {
+                senderId: userId,
+                recipientId: QUEEN_AWA_ID,
+                recipientName: "Queen Awa",
+                amount: amount,
+                timestamp: Date.now(),
+            });
+            console.log(`Tip of Ksh ${amount} recorded.`);
+            return true;
+        } catch (e) {
+            console.error("Error recording tip: ", e);
+            return false;
+        }
+    }
+
+    // --- UI & STATE FUNCTIONS ---
+
+    function renderPlaylists(playlists) {
+        const container = document.getElementById('playlists-container');
+        container.innerHTML = '';
+
+        if (playlists.length === 0) {
+            container.innerHTML = `<div class="text-center p-8 bg-gray-900 rounded-xl">
+                    <i data-lucide="folder-open" class="w-10 h-10 mx-auto text-primary mb-2"></i>
+                    <p class="text-gray-400">No playlists found. Create your first legacy collection!</p>
+                </div>`;
+        } else {
+            playlists.forEach(playlist => {
+                const el = document.createElement('div');
+                el.className = 'flex items-center space-x-4 p-3 bg-gray-800 rounded-xl shadow-lg hover:bg-gray-700 transition duration-300 cursor-pointer';
+                el.innerHTML = `
+                    <img src="https://placehold.co/60x60/8b0000/ffffff?text=PL" class="rounded-lg object-cover">
+                    <div>
+                        <p class="font-extrabold text-xl text-white">${playlist.name}</p>
+                        <p class="text-sm text-gray-400">0 Tracks | Created: ${new Date(playlist.createdAt).toLocaleDateString()}</p>
+                    </div>
+                `;
+                container.appendChild(el);
+            });
+        }
+        lucide.createIcons();
+    }
+
+    function switchTab(tabId) {
+        activeTab = tabId;
+        document.querySelectorAll('.content-section').forEach(section => {
+            section.classList.remove('active');
+        });
+        document.getElementById(tabId).classList.add('active');
+
+        document.querySelectorAll('.nav-button').forEach(button => {
+            const target = button.getAttribute('data-target');
+            if (target === tabId) {
+                button.classList.add('text-secondary');
+                button.classList.remove('text-gray-400', 'hover:text-white');
+            } else {
+                button.classList.remove('text-secondary');
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
